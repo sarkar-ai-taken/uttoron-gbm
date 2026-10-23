@@ -32,7 +32,7 @@ body {
 .center { text-align: center; }
 
 .top { padding: 18px 16px 6px; max-width: 720px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
-.logo { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; box-shadow: 0 2px 8px rgba(0,0,0,.18); flex: none; }
+.logo { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; box-shadow: 0 2px 8px rgba(0,0,0,.18); flex: none; }
 .brand-text { min-width: 0; }
 .brand { font-weight: 700; letter-spacing: .02em; display: flex; align-items: center; gap: 8px; color: var(--accent); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); display: inline-block; }
