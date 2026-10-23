@@ -94,6 +94,16 @@
 
 </main>
 
+<!-- Closing countdown (shown on top of the ballot/review when the admin closes voting) -->
+<div id="countdown" class="overlay hidden" role="alertdialog" aria-live="assertive">
+  <div class="overlay-card">
+    <div class="overlay-title">Voting is closing</div>
+    <div class="big-num" id="cdNum">10</div>
+    <div class="muted" id="cdHint">Submit your ballot before the count reaches zero.</div>
+    <button type="button" class="btn primary hidden" id="cdSubmit">Submit my ballot now</button>
+  </div>
+</div>
+
 <footer class="foot">Each eligible member may vote once. All ballots are logged with a timestamp and receipt number.</footer>
 
 <script src="config.js"></script>
@@ -127,6 +137,8 @@
       $('windowStatus').innerHTML = c.open
         ? '<span class="pill open">Voting is open</span>'
         : '<span class="pill closed">Voting has not opened yet</span>';
+      closeAt = c.closeAt || null;
+      if (c.open && closeAt && !cdTimer && (visible('step-ballot') || visible('step-review'))) startCountdown();
       return c;
     } catch (e) {
       $('windowStatus').innerHTML = '<span class="pill closed">Could not reach the voting server</span>';
@@ -135,8 +147,61 @@
     }
   }
   loadConfig();
-  // While waiting on the identify screen, poll so the "open" pill flips without a reload.
-  setInterval(() => { if (!$('step-identify').classList.contains('hidden') || !$('step-closed').classList.contains('hidden')) loadConfig(); }, 20000);
+
+  // ---- status polling + closing countdown ----
+  // Identify/closed screens: refresh every 20 s. Ballot/review screens: cheap 'status' poll every 5 s
+  // so the 10 -> 1 countdown reaches every voter when the Election Officer closes voting.
+  let closeAt = null, clockSkew = 0, cdTimer = null, submitting = false;
+  function visible(id) { return !$(id).classList.contains('hidden'); }
+  async function pollStatus() {
+    try {
+      const st = await API.call('status');
+      if (st.serverTime) clockSkew = st.serverTime - Date.now();
+      applyStatus(st);
+    } catch (e) { /* transient; try again next tick */ }
+  }
+  function applyStatus(st) {
+    state.open = st.open;
+    closeAt = st.closeAt || null;
+    if (!st.open) {
+      stopCountdown();
+      if (visible('step-ballot') || visible('step-review')) {
+        if (!submitting) { $('closedMsg').textContent = 'Voting has closed. Ballots can no longer be submitted.'; show('step-closed'); }
+      }
+      return;
+    }
+    if (closeAt && !cdTimer) startCountdown();
+  }
+  function startCountdown() {
+    $('countdown').classList.remove('hidden');
+    tick();
+    cdTimer = setInterval(tick, 250);
+  }
+  function stopCountdown() { clearInterval(cdTimer); cdTimer = null; $('countdown').classList.add('hidden'); }
+  function tick() {
+    const left = Math.ceil((closeAt - (Date.now() + clockSkew)) / 1000);
+    if (left <= 0) {
+      stopCountdown();
+      if (!submitting && (visible('step-ballot') || visible('step-review'))) {
+        $('closedMsg').textContent = 'Voting has closed. Ballots can no longer be submitted.'; show('step-closed');
+      }
+      return;
+    }
+    $('cdNum').textContent = Math.min(left, 10);
+    $('cdNum').classList.toggle('urgent', left <= 3);
+    const canSubmit = state.selected.size > 0 && (visible('step-ballot') || visible('step-review'));
+    $('cdSubmit').classList.toggle('hidden', !canSubmit);
+    $('cdHint').textContent = canSubmit ? `You have ${state.selected.size} selected. Submit before the count reaches zero.` : 'Submit your ballot before the count reaches zero.';
+    // Hide the overlay on screens where there is nothing to submit.
+    $('countdown').classList.toggle('hidden', !(visible('step-ballot') || visible('step-review')));
+  }
+  $('cdSubmit').addEventListener('click', () => submitVote());
+  setInterval(() => {
+    if (visible('step-ballot') || visible('step-review')) pollStatus();
+  }, 5000);
+  setInterval(() => {
+    if (visible('step-identify') || visible('step-closed')) loadConfig();
+  }, 20000);
 
   // ---- step 1 ----
   $('identifyForm').addEventListener('submit', async ev => {
@@ -216,12 +281,16 @@
 
   // ---- step 3 ----
   $('backBtn').addEventListener('click', () => show('step-ballot'));
-  $('submitBtn').addEventListener('click', async () => {
-    const btn = $('submitBtn'); busy(btn, true, 'Submitting…'); $('backBtn').disabled = true;
+  $('submitBtn').addEventListener('click', submitVote);
+  async function submitVote() {
+    if (submitting || state.selected.size === 0) return;
+    submitting = true;
+    const btn = $('submitBtn'); busy(btn, true, 'Submitting…'); $('backBtn').disabled = true; $('cdSubmit').disabled = true;
     try {
       const r = await API.call('vote', { email: state.email, code: state.code, choices: [...state.selected] });
       $('receipt').textContent = r.receipt;
       $('doneTime').textContent = 'Recorded ' + new Date(r.timestamp).toLocaleString();
+      stopCountdown();
       show('step-done');
     } catch (e) {
       if (e.data && e.data.alreadyVoted) {
@@ -232,9 +301,10 @@
         show('step-closed');
       } else {
         $('submitError').textContent = e.message + ' — please try again.';
+        if (visible('step-ballot')) $('ballotError').textContent = e.message + ' — please try again.';
       }
-    } finally { busy(btn, false); $('backBtn').disabled = false; }
-  });
+    } finally { submitting = false; busy(btn, false); $('backBtn').disabled = false; $('cdSubmit').disabled = false; }
+  }
 })();
 </script>
 </body>

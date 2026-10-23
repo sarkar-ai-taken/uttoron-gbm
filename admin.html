@@ -17,9 +17,10 @@
 
   <section id="login" class="card">
     <h1>Election Officer sign-in</h1>
-    <p class="muted">Enter the admin key from the <code>Config</code> tab of the election Google Sheet.</p>
+    <p class="muted">Admins are listed in the <code>Admins</code> tab of the election Google Sheet. Each admin signs in with their own email and password; every open/close action is logged with your name.</p>
     <form id="loginForm">
-      <label>Admin key <input type="password" id="adminKey" autocomplete="current-password" required></label>
+      <label>Email <input type="email" id="adminEmail" autocomplete="username" required></label>
+      <label>Password <input type="password" id="adminPassword" autocomplete="current-password" required></label>
       <button class="btn primary" type="submit">Sign in</button>
       <div class="error" id="loginError" role="alert"></div>
     </form>
@@ -28,8 +29,9 @@
   <section id="panel" class="card hidden">
     <div class="row" style="justify-content:space-between">
       <h1 style="margin:0">Live results</h1>
-      <span id="openPill" class="pill closed">—</span>
+      <div class="row"><span id="openPill" class="pill closed">—</span> <span class="muted small" id="whoami"></span> <button class="link" id="logoutBtn">Sign out</button></div>
     </div>
+    <div class="notice hidden" id="closingNotice">Closing voting — voters see a countdown: <b id="adminCd">10</b></div>
     <p class="muted small" id="updated"></p>
 
     <div class="grid">
@@ -82,22 +84,40 @@
 <script>
 (function () {
   const $ = id => document.getElementById(id);
-  let adminKey = sessionStorage.getItem('adminKey') || '';
-  let last = null, timer = null;
+  let token = sessionStorage.getItem('adminToken') || '';
+  let adminName = sessionStorage.getItem('adminName') || '';
+  let last = null, timer = null, cdTimer = null;
 
   function err(id, msg) { $(id).textContent = msg || ''; }
-  async function admin(action, extra) { return API.call(action, Object.assign({ adminKey }, extra || {})); }
+  async function admin(action, extra) { return API.call(action, Object.assign({ token }, extra || {})); }
+  function showLogin(msg) {
+    token = ''; sessionStorage.removeItem('adminToken'); sessionStorage.removeItem('adminName');
+    $('panel').classList.add('hidden'); $('login').classList.remove('hidden'); err('loginError', msg || '');
+  }
 
   async function refresh() {
     try {
       const r = await admin('results');
       last = r; render(r); err('panelError', '');
       $('login').classList.add('hidden'); $('panel').classList.remove('hidden');
-      sessionStorage.setItem('adminKey', adminKey);
+      $('whoami').textContent = adminName ? 'Signed in as ' + adminName : '';
     } catch (e) {
-      if (/admin key/i.test(e.message)) { sessionStorage.removeItem('adminKey'); $('panel').classList.add('hidden'); $('login').classList.remove('hidden'); err('loginError', e.message); }
+      if (e.data && e.data.authRequired) showLogin(e.message);
       else err('panelError', e.message);
     }
+  }
+
+  // Mirror of the voters' countdown so the Officer knows when the window has actually shut.
+  function trackClose(closeAt) {
+    clearInterval(cdTimer);
+    if (!closeAt) { $('closingNotice').classList.add('hidden'); return; }
+    $('closingNotice').classList.remove('hidden');
+    const tick = () => {
+      const left = Math.ceil((closeAt - Date.now()) / 1000);
+      if (left <= 0) { clearInterval(cdTimer); $('closingNotice').classList.add('hidden'); refresh(); return; }
+      $('adminCd').textContent = Math.min(left, 10) + (left > 10 ? ' (starting…)' : '');
+    };
+    tick(); cdTimer = setInterval(tick, 250);
   }
 
   function render(r) {
@@ -106,7 +126,9 @@
     $('turnout').textContent = r.eligible ? Math.round(100 * r.ballots / r.eligible) + '%' : '—';
     $('openPill').textContent = r.open ? 'Voting OPEN' : 'Voting CLOSED';
     $('openPill').className = 'pill ' + (r.open ? 'open' : 'closed');
-    $('openBtn').disabled = r.open; $('closeBtn').disabled = !r.open;
+    $('openBtn').disabled = r.open; $('closeBtn').disabled = !r.open || !!r.closeAt;
+    if (r.open && r.closeAt && !cdTimer) trackClose(r.closeAt);
+    if (!r.open) trackClose(null);
     $('updated').textContent = 'Updated ' + new Date(r.generatedAt).toLocaleTimeString();
     $('tieNotice').classList.toggle('hidden', !r.tieAtCutoff);
 
@@ -125,10 +147,25 @@
     });
   }
 
-  $('loginForm').addEventListener('submit', e => { e.preventDefault(); adminKey = $('adminKey').value.trim(); err('loginError', ''); refresh(); });
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault(); err('loginError', '');
+    try {
+      const r = await API.call('adminLogin', { email: $('adminEmail').value.trim(), password: $('adminPassword').value });
+      token = r.token; adminName = r.name || r.email;
+      sessionStorage.setItem('adminToken', token); sessionStorage.setItem('adminName', adminName);
+      $('adminPassword').value = '';
+      refresh();
+    } catch (e2) { err('loginError', e2.message); }
+  });
+  $('logoutBtn').addEventListener('click', async () => { try { await admin('adminLogout'); } catch (e) {} showLogin(''); });
   $('refreshBtn').addEventListener('click', refresh);
   $('openBtn').addEventListener('click', async () => { if (confirm('Open voting now?')) { await admin('setOpen', { open: true }).catch(e => err('panelError', e.message)); refresh(); } });
-  $('closeBtn').addEventListener('click', async () => { if (confirm('Close voting? Members will no longer be able to submit ballots.')) { await admin('setOpen', { open: false }).catch(e => err('panelError', e.message)); refresh(); } });
+  $('closeBtn').addEventListener('click', async () => {
+    if (!confirm('Close voting? Voters will see a 10-second countdown, then no more ballots are accepted.')) return;
+    try { const r = await admin('setOpen', { open: false }); trackClose(r.closeAt); $('closeBtn').disabled = true; }
+    catch (e) { err('panelError', e.message); }
+    refresh();
+  });
   $('printBtn').addEventListener('click', () => window.print());
 
   function download(name, text) {
@@ -159,7 +196,7 @@
   function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!$('panel').classList.contains('hidden')) refresh(); }, 10000); }
   $('auto').addEventListener('change', schedule); schedule();
 
-  if (adminKey) refresh();
+  if (token) refresh();
 })();
 </script>
 </body>

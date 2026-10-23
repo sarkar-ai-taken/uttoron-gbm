@@ -34,9 +34,14 @@ paper trail.
    should be the Secretary's / Election Officer's.
 2. **Extensions → Apps Script.** Delete the sample code, paste in `apps-script/Code.gs`, save.
 3. In the editor, pick the function **`setup`** and click **Run**. Approve the permissions.
-   This creates the tabs `Config`, `Voters`, `Candidates`, `Votes`, `Log`
-   and generates an `admin_key` (visible in the `Config` tab).
-4. **Deploy → New deployment → type: Web app.**
+   This creates the tabs `Config`, `Admins`, `Voters`, `Candidates`, `Votes`, `Log`
+   and adds you as the first admin (password printed in the execution log and
+   visible in the `Admins` tab).
+4. **Admins tab** — one row per person who may open/close voting:
+   `email | name | password`. Each admin signs in separately on `admin.html`;
+   every open/close/code action is logged with their email in the `Log` tab.
+   Admin sessions last 6 hours.
+5. **Deploy → New deployment → type: Web app.**
    *Execute as:* **Me**. *Who has access:* **Anyone**. Click Deploy and copy the **Web app URL**
    (ends in `/exec`).
 
@@ -66,18 +71,23 @@ MOCK: '',
    `id` can be anything unique (`c1`, `c2`…); `note` is optional (e.g. "Incumbent");
    set `active` to `FALSE` to hide a withdrawn nominee without deleting the row.
 3. **Config tab** — set `seats` (X), `election_name`, and leave `voting_open` = `false`.
-4. Open `admin.html`, sign in with the `admin_key`, click **Generate missing codes**.
+4. Open `admin.html`, sign in with your admin email + password, click **Generate missing codes**.
 5. **Send codes.** Click **Download codes CSV** and send via a Gmail/Sheets mail merge
    (recommended for 300+ members), or click **Email codes via script**
    (uses the Sheet owner's Gmail quota: ~100/day personal, ~1,500/day Workspace).
 
 ## On election day (the 15-minute window)
 
-1. Election Officer opens `admin.html`, signs in.
+1. Election Officer opens `admin.html`, signs in with their own email + password.
 2. Put the voter URL on the screen / in Zoom chat. Members can open it early — they'll
    see "Voting has not opened yet" and the page refreshes itself.
 3. Click **Open voting**. Announce the window.
 4. Watch *ballots cast* climb. Click **Close voting** at the end of the window.
+   Every voter who is on the ballot sees a full-screen **10 → 1 countdown** with a
+   "Submit my ballot now" button; ballots submitted before zero count. After zero the
+   backend rejects submissions and voters see "Voting has closed".
+   (The server grace is 15 s — `close_countdown_sec` in `Config` — so a voter whose
+   page polls late still gets the full 10-second count.)
 5. Top X rows are highlighted as elected. A yellow **tie at the cutoff** banner appears if
    the last seat is tied — the Election Officer resolves it (by-laws).
 6. Click **Download results CSV** / **Print** for the minutes. The `Votes` tab holds every
@@ -87,19 +97,25 @@ MOCK: '',
 - Email must be in `Voters` and the code must match (case-insensitive).
 - One ballot per email — a second submission is rejected and shows the original receipt.
 - At most `seats` choices, all must be active candidate ids; at least one choice.
-- Votes are accepted only while `voting_open` = `true`.
+- Votes are accepted only while voting is open (and, after **Close**, only until the
+  scheduled close time).
+- Admin actions require a per-admin login (`Admins` tab) and are logged by email.
 - Writes are serialized with a script lock so double-taps can't double-vote.
 
 ## Capacity
 Apps Script comfortably handles ~1 vote/second sustained (1000 ballots in 15 min ≈ 1.1/s);
 the candidate list is cached for 30 s so 1000 people loading the page at once doesn't
-hammer the Sheet. If you expect a surge at "Open voting", tell members to load the page
+hammer the Sheet. Voters on the ballot screen poll a cache-only `status` endpoint every
+5 s (that's how the closing countdown reaches them); it never touches the Sheet. If you expect a surge at "Open voting", tell members to load the page
 and enter their code *before* the window opens — the ballot screen appears the moment
 voting opens.
 
 ## Local testing
 Set `MOCK: '1'` in `config.js` and open `index.html` in a browser. Test voter:
-`test@example.com` / `ABC123`. Admin key: `admin`. Set `MOCK: ''` before publishing.
+`test@example.com` / `ABC123` (and `spouse@example.com` / `XYZ789`).
+Admin: `admin@example.com` / `admin`. Mock state is kept in the browser's localStorage so
+you can open the admin and voter pages in two tabs and try the close countdown.
+Set `MOCK: ''` before publishing.
 
 ## Privacy
 `data/` contains member names and emails. Keep this repo **private**, or move `data/` out of

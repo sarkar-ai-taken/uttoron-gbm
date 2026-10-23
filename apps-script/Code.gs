@@ -5,16 +5,19 @@
  * The bound Google Sheet is the paper trail. Tabs (created by setup()):
  *
  *   Config     key | value
+ *   Admins     email | name | password        (Election Officer + helpers; each logs in separately)
  *   Voters     email | name | membership | code | voted_at | receipt
  *   Candidates id | name | note | active
  *   Votes      timestamp | email | name | choices | count | receipt | user_agent
  *   Log        timestamp | action | email | detail
  *
- * Run setup() once from the editor to create tabs + default config.
+ * Run setup() once from the editor to create tabs + default config, then add
+ * one row per admin to the Admins tab (email, name, password).
  */
 
 const SHEET = {
   CONFIG: 'Config',
+  ADMINS: 'Admins',
   VOTERS: 'Voters',
   CANDIDATES: 'Candidates',
   VOTES: 'Votes',
@@ -25,8 +28,9 @@ const DEFAULT_CONFIG = {
   election_name: 'Uttoron Executive Committee Election',
   seats: 26,              // X — max picks per ballot (also # of winners shown)
   voting_open: 'false',   // Election Officer toggles from admin page
-  admin_key: '',          // set a long random string here before election day
   code_length: 6,
+  close_countdown_sec: 15, // grace after admin clicks Close; voters see a 10 -> 1 countdown in the last 10 s
+  voting_close_at: '',    // set automatically when the admin clicks Close // how long an admin login stays valid
 };
 
 // ------------------------------------------------------------------ setup
@@ -34,6 +38,7 @@ const DEFAULT_CONFIG = {
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEET.CONFIG, ['key', 'value']);
+  ensureSheet_(ss, SHEET.ADMINS, ['email', 'name', 'password']);
   ensureSheet_(ss, SHEET.VOTERS, ['email', 'name', 'membership', 'code', 'voted_at', 'receipt']);
   ensureSheet_(ss, SHEET.CANDIDATES, ['id', 'name', 'note', 'active']);
   ensureSheet_(ss, SHEET.VOTES, ['timestamp', 'email', 'name', 'choices', 'count', 'receipt', 'user_agent']);
@@ -44,12 +49,13 @@ function setup() {
   Object.keys(DEFAULT_CONFIG).forEach(k => {
     if (!(k in cfg)) sh.appendRow([k, DEFAULT_CONFIG[k]]);
   });
-  if (!cfg.admin_key) {
-    const key = Utilities.getUuid().replace(/-/g, '');
-    setConfig_('admin_key', key);
-    Logger.log('Generated admin_key: ' + key);
+  const admins = ss.getSheetByName(SHEET.ADMINS);
+  if (admins.getLastRow() < 2) {
+    const pw = randomCode_(10);
+    admins.appendRow([normEmail_(Session.getEffectiveUser().getEmail()), 'Election Officer', pw]);
+    Logger.log('Created first admin ' + Session.getEffectiveUser().getEmail() + ' with password: ' + pw);
   }
-  Logger.log('Setup complete. Fill Voters and Candidates tabs, then run generateCodes().');
+  Logger.log('Setup complete. Add more admins to the Admins tab, fill Voters and Candidates, then generate codes from admin.html.');
 }
 
 function ensureSheet_(ss, name, headers) {
@@ -88,9 +94,12 @@ function handle_(action, p, ua) {
   try {
     switch (action) {
       case 'config':        return actionConfig_();
+      case 'status':        return actionStatus_();
       case 'verify':        return actionVerify_(p);
       case 'vote':          return actionVote_(p, ua);
       // admin
+      case 'adminLogin':    return actionAdminLogin_(p);
+      case 'adminLogout':   return actionAdminLogout_(p);
       case 'results':       return admin_(p, actionResults_);
       case 'setOpen':       return admin_(p, actionSetOpen_);
       case 'generateCodes': return admin_(p, actionGenerateCodes_);
@@ -104,12 +113,39 @@ function handle_(action, p, ua) {
   }
 }
 
+/** Every admin action carries a session token from adminLogin; p.admin is set to the admin's email. */
 function admin_(p, fn) {
-  const cfg = readConfig_();
-  if (!cfg.admin_key || String(p.adminKey || '') !== String(cfg.admin_key)) {
-    return { ok: false, error: 'Invalid admin key' };
+  const token = String(p.token || '');
+  const email = token ? CacheService.getScriptCache().get('adm_' + token) : null;
+  if (!email) return { ok: false, error: 'Not signed in or session expired. Please sign in again.', authRequired: true };
+  p.admin = email;
+  return fn(p, readConfig_());
+}
+
+function actionAdminLogin_(p) {
+  const email = normEmail_(p.email);
+  const password = String(p.password || '');
+  if (!email || !password) return { ok: false, error: 'Enter your email and password.' };
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET.ADMINS);
+  const n = sh.getLastRow() - 1;
+  const rows = n > 0 ? sh.getRange(2, 1, n, 3).getValues() : [];
+  const row = rows.find(r => normEmail_(r[0]) === email);
+  if (!row || String(row[2]) !== password) {
+    log_('adminLoginFailed', email, '');
+    Utilities.sleep(800); // slow brute force
+    return { ok: false, error: 'Email or password is incorrect.' };
   }
-  return fn(p, cfg);
+  const cfg = readConfig_();
+  const hours = Math.min(Math.max(Number(cfg.admin_session_hours) || 6, 1), 6); // cache max is 6h
+  const token = Utilities.getUuid().replace(/-/g, '') + randomCode_(8);
+  CacheService.getScriptCache().put('adm_' + token, email, hours * 3600);
+  log_('adminLogin', email, '');
+  return { ok: true, token, name: String(row[1] || email), email };
+}
+
+function actionAdminLogout_(p) {
+  if (p.token) CacheService.getScriptCache().remove('adm_' + String(p.token));
+  return { ok: true };
 }
 
 // ------------------------------------------------------------------ public actions
@@ -120,10 +156,22 @@ function actionConfig_() {
     ok: true,
     electionName: cfg.election_name,
     seats: Number(cfg.seats) || 26,
-    open: String(cfg.voting_open) === 'true',
+    open: isOpen_(cfg),
+    closeAt: cfg.voting_close_at ? Number(cfg.voting_close_at) : null,
     candidates: readCandidates_(),
     serverTime: new Date().toISOString(),
   };
+}
+
+/** Cheap poll used by voter screens: open flag + scheduled close time. Cached 2 s so 1000 pollers don't touch the Sheet. */
+function actionStatus_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('status');
+  if (hit) return JSON.parse(hit);
+  const cfg = readConfig_();
+  const out = { ok: true, open: isOpen_(cfg), closeAt: cfg.voting_close_at ? Number(cfg.voting_close_at) : null, serverTime: Date.now() };
+  cache.put('status', JSON.stringify(out), 2);
+  return out;
 }
 
 function actionVerify_(p) {
@@ -134,7 +182,7 @@ function actionVerify_(p) {
 
 function actionVote_(p, ua) {
   const cfg = readConfig_();
-  if (String(cfg.voting_open) !== 'true') return { ok: false, error: 'Voting is closed.' };
+  if (!isOpen_(cfg)) return { ok: false, error: 'Voting is closed.' };
 
   const seats = Number(cfg.seats) || 26;
   const choices = Array.isArray(p.choices) ? p.choices.map(String) : [];
@@ -205,7 +253,8 @@ function actionResults_(p, cfg) {
     ok: true,
     electionName: cfg.election_name,
     seats,
-    open: String(cfg.voting_open) === 'true',
+    open: isOpen_(cfg),
+    closeAt: cfg.voting_close_at ? Number(cfg.voting_close_at) : null,
     eligible,
     ballots: rows.length,
     tieAtCutoff,
@@ -214,11 +263,38 @@ function actionResults_(p, cfg) {
   };
 }
 
-function actionSetOpen_(p) {
+/**
+ * open=true  -> voting opens immediately.
+ * open=false -> voting closes after a countdown (close_countdown_sec, default 10 s);
+ *               ballots submitted during the countdown still count.
+ */
+function actionSetOpen_(p, cfg) {
   const open = String(p.open) === 'true';
-  setConfig_('voting_open', open ? 'true' : 'false');
-  log_('setOpen', '', open ? 'OPEN' : 'CLOSED');
-  return { ok: true, open };
+  CacheService.getScriptCache().remove('status');
+  if (open) {
+    setConfig_('voting_open', 'true');
+    setConfig_('voting_close_at', '');
+    log_('setOpen', p.admin, 'OPEN');
+    return { ok: true, open: true, closeAt: null };
+  }
+  const secs = Number(cfg.close_countdown_sec);
+  const closeAt = Date.now() + (isNaN(secs) ? 15 : secs) * 1000;
+  setConfig_('voting_close_at', String(closeAt));
+  log_('setOpen', p.admin, 'CLOSING in ' + (isNaN(secs) ? 15 : secs) + 's (close_at ' + new Date(closeAt).toISOString() + ')');
+  return { ok: true, open: true, closeAt };
+}
+
+/** Voting is open if the flag is on and any scheduled close time has not passed. */
+function isOpen_(cfg) {
+  if (String(cfg.voting_open) !== 'true') return false;
+  const closeAt = Number(cfg.voting_close_at);
+  if (closeAt && Date.now() >= closeAt) {
+    // Countdown has elapsed: finalize the close so the flag reflects reality in the Sheet.
+    setConfig_('voting_open', 'false');
+    log_('setOpen', 'system', 'CLOSED (countdown elapsed)');
+    return false;
+  }
+  return true;
 }
 
 function actionGenerateCodes_(p, cfg) {
@@ -240,11 +316,12 @@ function actionGenerateCodes_(p, cfg) {
     }
   });
   range.setValues(vals);
-  log_('generateCodes', '', generated + ' codes');
+  log_('generateCodes', p.admin, generated + ' codes');
   return { ok: true, generated };
 }
 
-function actionCodesCsv_() {
+function actionCodesCsv_(p) {
+  log_('codesCsv', p.admin, 'downloaded');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(SHEET.VOTERS);
   const n = sh.getLastRow() - 1;
@@ -282,7 +359,7 @@ function actionSendCodes_(p, cfg) {
     });
     sent++;
   }
-  log_('sendCodes', '', `sent ${sent}, skipped ${skipped}`);
+  log_('sendCodes', p.admin, `sent ${sent}, skipped ${skipped}`);
   return { ok: true, sent, skipped, remainingQuota: MailApp.getRemainingDailyQuota() };
 }
 

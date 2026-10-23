@@ -124,3 +124,12 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700
 .sec { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
 .sec h2 { font-size: 17px; margin: 0 0 6px; }
 code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 14px; }
+
+/* ---- closing countdown overlay ---- */
+.overlay { position: fixed; inset: 0; z-index: 50; background: rgba(20, 16, 12, .72); display: grid; place-items: center; padding: 16px; backdrop-filter: blur(2px); }
+.overlay-card { background: var(--card); border-radius: var(--radius); padding: 26px 22px; text-align: center; max-width: 420px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.overlay-title { font-weight: 800; font-size: 20px; color: var(--accent); letter-spacing: .02em; }
+.big-num { font-size: 120px; line-height: 1; font-weight: 900; font-variant-numeric: tabular-nums; margin: 10px 0 6px; color: var(--ink); animation: pulse 1s ease-in-out infinite; }
+.big-num.urgent { color: var(--accent); }
+@keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
+.overlay .btn { margin-top: 14px; }
