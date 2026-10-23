@@ -5,5 +5,5 @@ window.ELECTION_CONFIG = {
   API_URL: 'https://script.google.com/macros/s/REPLACE_ME/exec',
   ORG_NAME: 'Uttoron',
   // Set to a non-empty string to run the site against a local mock API (for testing only).
-  MOCK: '',
+  MOCK: '1',
 };

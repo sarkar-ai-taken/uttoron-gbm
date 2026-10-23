@@ -2,12 +2,10 @@
 // Lets you try the voter and admin pages locally with no Google Sheet.
 (function () {
   if (!(window.ELECTION_CONFIG || {}).MOCK) return;
-  const names = ['Anirban Das','Bidisha Roy','Chandan Sen','Debjani Ghosh','Esha Banerjee','Farhan Ahmed','Gargi Mukherjee','Hiran Pal','Indrani Bose','Joydeep Saha',
-    'Kaberi Dutta','Lopamudra Nag','Mainak Chatterjee','Nandini Mitra','Oindrila Basu','Pradip Kar','Rituparna Guha','Sourav Majumdar','Tanushree Dey','Ujjwal Biswas',
-    'Vikram Chakraborty','Writam Mondal','Yashodhara Roy','Zubin Haque','Arpita Sinha','Bikash Lahiri','Chaitali Nandi','Dipankar Ghoshal','Ela Sarkar','Firoz Mallick'];
+  const names = Array.from({ length: 30 }, (_, i) => 'Person ' + (i + 1));
   const db = {
     seats: 26, open: true, closeAt: null, electionName: 'Uttoron Executive Committee Election 2027 (MOCK)',
-    candidates: names.map((n, i) => ({ id: 'c' + (i + 1), name: n, note: i % 7 === 0 ? 'Incumbent' : '', active: true })),
+    candidates: names.map((n, i) => ({ id: 'c' + (i + 1), name: n, note: '', active: true })),
     voters: { 'test@example.com': { name: 'Test Member', code: 'ABC123' }, 'spouse@example.com': { name: 'Spouse Member', code: 'XYZ789' } },
     votes: [], adminKey: 'admin',
   };

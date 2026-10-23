@@ -25,6 +25,7 @@ paper trail.
 | `apps-script/Code.gs` | The backend — paste into a Google Apps Script bound to the election Sheet |
 | `data/user_list_10_23_2026_members.csv` | Member export (type = member) from the membership system |
 | `data/voters-2026-10-23.csv` | Same members in the `Voters` tab format — paste into the Sheet |
+| `data/candidates.csv` | 30 placeholder nominees (Person 1 … Person 30) for the `Candidates` tab — replace with real names |
 | `data/candidates-template.csv` | Column layout for the `Candidates` tab |
 
 ## One-time setup (≈20 minutes)
@@ -53,10 +54,13 @@ MOCK: '',
 ```
 
 ### 3. Publish on GitHub Pages
-1. Push this repo to GitHub.
-2. **Settings → Pages → Source: Deploy from a branch → `main` / root.**
-3. The site is live at `https://<user>.github.io/uttoron-gbm/` (voters) and
-   `https://<user>.github.io/uttoron-gbm/admin.html` (Election Officer).
+Pushing to `main` runs `.github/workflows/pages.yml`, which enables Pages and deploys
+**only the app files** (never `data/`). Watch the **Actions** tab for the first run; the site
+is then live at `https://<owner>.github.io/uttoron-gbm/` (voters) and
+`https://<owner>.github.io/uttoron-gbm/admin.html` (Election Officer).
+
+Until the Apps Script backend is deployed, `config.js` has `MOCK: '1'` so the live site runs
+against the in-browser mock (test accounts below). Set `MOCK: ''` once `API_URL` is filled in.
 
 > GitHub Pages on a **private** repo needs GitHub Pro/Team. If the repo is public, do **not**
 > commit member data — see "Privacy" below.
