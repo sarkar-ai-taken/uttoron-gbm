@@ -1,0 +1,4 @@
+id,name,note,active
+c1,Candidate One,Incumbent,TRUE
+c2,Candidate Two,,TRUE
+c3,Candidate Three,Withdrawn,FALSE

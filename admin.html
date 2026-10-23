@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Uttoron Election — Election Officer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span> Uttoron · Election Officer</div>
+  <div class="title" id="electionName">Election control panel</div>
+</header>
+
+<main class="wrap">
+
+  <section id="login" class="card">
+    <h1>Election Officer sign-in</h1>
+    <p class="muted">Enter the admin key from the <code>Config</code> tab of the election Google Sheet.</p>
+    <form id="loginForm">
+      <label>Admin key <input type="password" id="adminKey" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Sign in</button>
+      <div class="error" id="loginError" role="alert"></div>
+    </form>
+  </section>
+
+  <section id="panel" class="card hidden">
+    <div class="row" style="justify-content:space-between">
+      <h1 style="margin:0">Live results</h1>
+      <span id="openPill" class="pill closed">—</span>
+    </div>
+    <p class="muted small" id="updated"></p>
+
+    <div class="grid">
+      <div class="stat"><div class="n" id="ballots">0</div><div class="l">ballots cast</div></div>
+      <div class="stat"><div class="n" id="eligible">0</div><div class="l">eligible emails</div></div>
+      <div class="stat"><div class="n" id="turnout">0%</div><div class="l">turnout</div></div>
+      <div class="stat"><div class="n" id="seats">26</div><div class="l">seats (X)</div></div>
+    </div>
+
+    <div class="row">
+      <button class="btn ok" id="openBtn">Open voting</button>
+      <button class="btn danger" id="closeBtn">Close voting</button>
+      <button class="btn" id="refreshBtn">Refresh</button>
+      <label style="margin:0;display:flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="auto" checked style="width:auto"> auto-refresh (10s)</label>
+    </div>
+    <div class="error" id="panelError" role="alert"></div>
+
+    <div id="tieNotice" class="notice hidden">⚠ Tie at the cutoff — the candidates highlighted in yellow have the same vote count as the last winning seat. The Election Officer must resolve this (by-laws: all disputes resolved by the Election Office).</div>
+
+    <table>
+      <thead><tr><th>#</th><th>Candidate</th><th style="width:40%"></th><th class="num">Votes</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <div class="sec">
+      <h2>Paper trail</h2>
+      <p class="muted small">Every ballot is a row in the <code>Votes</code> tab of the Google Sheet (timestamp, email, choices, receipt). Download the tally shown above as CSV for the minutes.</p>
+      <div class="row">
+        <button class="btn" id="csvBtn">Download results CSV</button>
+        <button class="btn" id="printBtn">Print results</button>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>Before the meeting: voter codes</h2>
+      <p class="muted small">Fill the <code>Voters</code> tab (email, name, membership), then generate one-time codes. Download the CSV for a mail merge, or let the script email them (Gmail limit ≈100/day on personal accounts, ≈1500/day on Workspace — use the CSV + mail merge for 1000 members).</p>
+      <div class="row">
+        <button class="btn" id="genBtn">Generate missing codes</button>
+        <button class="btn" id="codesBtn">Download codes CSV</button>
+        <button class="btn" id="sendBtn">Email codes via script</button>
+      </div>
+      <div class="notice ok hidden" id="codeNotice"></div>
+    </div>
+  </section>
+</main>
+
+<script src="config.js"></script>
+<script src="mock-api.js"></script>
+<script src="api.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let adminKey = sessionStorage.getItem('adminKey') || '';
+  let last = null, timer = null;
+
+  function err(id, msg) { $(id).textContent = msg || ''; }
+  async function admin(action, extra) { return API.call(action, Object.assign({ adminKey }, extra || {})); }
+
+  async function refresh() {
+    try {
+      const r = await admin('results');
+      last = r; render(r); err('panelError', '');
+      $('login').classList.add('hidden'); $('panel').classList.remove('hidden');
+      sessionStorage.setItem('adminKey', adminKey);
+    } catch (e) {
+      if (/admin key/i.test(e.message)) { sessionStorage.removeItem('adminKey'); $('panel').classList.add('hidden'); $('login').classList.remove('hidden'); err('loginError', e.message); }
+      else err('panelError', e.message);
+    }
+  }
+
+  function render(r) {
+    $('electionName').textContent = r.electionName;
+    $('ballots').textContent = r.ballots; $('eligible').textContent = r.eligible; $('seats').textContent = r.seats;
+    $('turnout').textContent = r.eligible ? Math.round(100 * r.ballots / r.eligible) + '%' : '—';
+    $('openPill').textContent = r.open ? 'Voting OPEN' : 'Voting CLOSED';
+    $('openPill').className = 'pill ' + (r.open ? 'open' : 'closed');
+    $('openBtn').disabled = r.open; $('closeBtn').disabled = !r.open;
+    $('updated').textContent = 'Updated ' + new Date(r.generatedAt).toLocaleTimeString();
+    $('tieNotice').classList.toggle('hidden', !r.tieAtCutoff);
+
+    const max = Math.max(1, ...r.ranked.map(x => x.votes));
+    const cutVotes = r.ranked[r.seats - 1] ? r.ranked[r.seats - 1].votes : -1;
+    const tb = $('rows'); tb.innerHTML = '';
+    r.ranked.forEach((c, i) => {
+      const tr = document.createElement('tr');
+      const win = i < r.seats;
+      if (win) tr.classList.add('win');
+      if (r.tieAtCutoff && c.votes === cutVotes) tr.classList.add('tie');
+      if (i === r.seats - 1) tr.classList.add('cut');
+      tr.innerHTML = `<td>${i + 1}</td><td></td><td><div class="bar"><span style="width:${100 * c.votes / max}%"></span></div></td><td class="num">${c.votes}</td>`;
+      tr.children[1].textContent = c.name + (win ? ' ✓' : '');
+      tb.appendChild(tr);
+    });
+  }
+
+  $('loginForm').addEventListener('submit', e => { e.preventDefault(); adminKey = $('adminKey').value.trim(); err('loginError', ''); refresh(); });
+  $('refreshBtn').addEventListener('click', refresh);
+  $('openBtn').addEventListener('click', async () => { if (confirm('Open voting now?')) { await admin('setOpen', { open: true }).catch(e => err('panelError', e.message)); refresh(); } });
+  $('closeBtn').addEventListener('click', async () => { if (confirm('Close voting? Members will no longer be able to submit ballots.')) { await admin('setOpen', { open: false }).catch(e => err('panelError', e.message)); refresh(); } });
+  $('printBtn').addEventListener('click', () => window.print());
+
+  function download(name, text) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' })); a.download = name; a.click();
+  }
+  $('csvBtn').addEventListener('click', () => {
+    if (!last) return;
+    const lines = [`"${last.electionName}"`, `Generated,${last.generatedAt}`, `Ballots,${last.ballots}`, `Eligible,${last.eligible}`, `Seats,${last.seats}`, '', 'Rank,Candidate,Votes,Elected'];
+    last.ranked.forEach((c, i) => lines.push(`${i + 1},"${c.name.replace(/"/g, '""')}",${c.votes},${i < last.seats ? 'YES' : ''}`));
+    download('uttoron-election-results.csv', lines.join('\n'));
+  });
+  $('genBtn').addEventListener('click', async () => {
+    try { const r = await admin('generateCodes'); note(`Generated ${r.generated} new code(s).`); } catch (e) { err('panelError', e.message); }
+  });
+  $('codesBtn').addEventListener('click', async () => {
+    try { const r = await admin('codesCsv'); download('uttoron-voter-codes.csv', r.csv); } catch (e) { err('panelError', e.message); }
+  });
+  $('sendBtn').addEventListener('click', async () => {
+    if (!confirm('Email every voter their code now? Subject to your Gmail daily sending limit.')) return;
+    try {
+      const siteUrl = location.origin + location.pathname.replace(/admin\.html$/, '');
+      const r = await admin('sendCodes', { siteUrl });
+      note(`Sent ${r.sent}, skipped ${r.skipped}. Remaining daily quota: ${r.remainingQuota}.`);
+    } catch (e) { err('panelError', e.message); }
+  });
+  function note(msg) { const n = $('codeNotice'); n.textContent = msg; n.classList.remove('hidden'); }
+
+  function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!$('panel').classList.contains('hidden')) refresh(); }, 10000); }
+  $('auto').addEventListener('change', schedule); schedule();
+
+  if (adminKey) refresh();
+})();
+</script>
+</body>
+</html>

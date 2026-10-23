@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Uttoron Election — Vote</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span> <span id="orgName">Uttoron</span></div>
+  <div class="title" id="electionName">Executive Committee Election</div>
+</header>
+
+<main class="wrap">
+
+  <!-- STEP 1: identify -->
+  <section id="step-identify" class="card">
+    <h1>Enter your details</h1>
+    <p class="muted">Use the email address registered with Uttoron and the voting code you were sent.</p>
+    <form id="identifyForm" autocomplete="on">
+      <label>Email address
+        <input type="email" id="email" name="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
+      </label>
+      <label>Voting code
+        <input type="text" id="code" name="code" required autocomplete="one-time-code" inputmode="text" maxlength="12" placeholder="e.g. K7M2PQ" class="code">
+      </label>
+      <button type="submit" class="btn primary" id="identifyBtn">Continue</button>
+      <div class="error" id="identifyError" role="alert"></div>
+    </form>
+    <div class="status" id="windowStatus"></div>
+  </section>
+
+  <!-- STEP 2: ballot -->
+  <section id="step-ballot" class="card hidden">
+    <div class="voter-line">Voting as <b id="voterName"></b> <span class="muted" id="voterEmail"></span></div>
+    <h1>Select your candidates</h1>
+    <p class="muted">Choose up to <b id="seatsText">26</b> of the <span id="candCount"></span> candidates below. Tap a name to select it.</p>
+
+    <div class="sticky-counter">
+      <div class="counter"><span id="selCount">0</span> / <span id="seatsText2">26</span> selected</div>
+      <div class="counter-actions">
+        <button type="button" class="link" id="clearBtn">Clear</button>
+      </div>
+    </div>
+
+    <input type="search" id="filter" placeholder="Search candidates…" class="search" aria-label="Search candidates">
+
+    <ul class="cands" id="candList"></ul>
+
+    <div class="actions">
+      <button type="button" class="btn primary" id="reviewBtn" disabled>Review my ballot</button>
+    </div>
+    <div class="error" id="ballotError" role="alert"></div>
+  </section>
+
+  <!-- STEP 3: review -->
+  <section id="step-review" class="card hidden">
+    <h1>Review your ballot</h1>
+    <p class="muted">You are voting for <b id="reviewCount"></b> candidate(s). Once submitted, your vote cannot be changed.</p>
+    <ol class="review-list" id="reviewList"></ol>
+    <div class="actions">
+      <button type="button" class="btn" id="backBtn">Go back</button>
+      <button type="button" class="btn primary" id="submitBtn">Submit vote</button>
+    </div>
+    <div class="error" id="submitError" role="alert"></div>
+  </section>
+
+  <!-- STEP 4: done -->
+  <section id="step-done" class="card hidden center">
+    <div class="check">✓</div>
+    <h1>Your vote has been recorded</h1>
+    <p class="muted">Receipt number</p>
+    <div class="receipt" id="receipt"></div>
+    <p class="muted small" id="doneTime"></p>
+    <p class="small">Take a screenshot of this receipt. The Election Officer can match it against the vote log if needed.</p>
+  </section>
+
+  <!-- Already voted -->
+  <section id="step-already" class="card hidden center">
+    <h1>You have already voted</h1>
+    <p class="muted">A ballot has already been recorded for <b id="alreadyEmail"></b>.</p>
+    <p class="muted">Receipt number</p>
+    <div class="receipt" id="alreadyReceipt"></div>
+    <p class="small">If you believe this is a mistake, please speak to the Election Officer.</p>
+  </section>
+
+  <!-- Closed -->
+  <section id="step-closed" class="card hidden center">
+    <h1>Voting is not open</h1>
+    <p class="muted" id="closedMsg">The Election Officer has not opened voting yet. This page will update automatically when voting opens.</p>
+    <button type="button" class="btn" id="recheckBtn">Check again</button>
+  </section>
+
+</main>
+
+<footer class="foot">Each eligible member may vote once. All ballots are logged with a timestamp and receipt number.</footer>
+
+<script src="config.js"></script>
+<script src="mock-api.js"></script>
+<script src="api.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const steps = ['step-identify', 'step-ballot', 'step-review', 'step-done', 'step-already', 'step-closed'];
+  const state = { email: '', code: '', name: '', seats: 26, candidates: [], open: false, selected: new Set() };
+
+  document.getElementById('orgName').textContent = (window.ELECTION_CONFIG || {}).ORG_NAME || 'Uttoron';
+
+  function show(id) {
+    steps.forEach(s => $(s).classList.toggle('hidden', s !== id));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function busy(btn, on, label) {
+    btn.disabled = on;
+    if (label) { btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = on ? label : btn.dataset.label; }
+  }
+
+  // ---- load config (candidates, seats, open flag) ----
+  async function loadConfig() {
+    try {
+      const c = await API.call('config');
+      state.seats = c.seats; state.candidates = c.candidates; state.open = c.open;
+      $('electionName').textContent = c.electionName || 'Election';
+      $('seatsText').textContent = c.seats; $('seatsText2').textContent = c.seats;
+      $('candCount').textContent = c.candidates.length;
+      $('windowStatus').innerHTML = c.open
+        ? '<span class="pill open">Voting is open</span>'
+        : '<span class="pill closed">Voting has not opened yet</span>';
+      return c;
+    } catch (e) {
+      $('windowStatus').innerHTML = '<span class="pill closed">Could not reach the voting server</span>';
+      $('identifyError').textContent = e.message;
+      return null;
+    }
+  }
+  loadConfig();
+  // While waiting on the identify screen, poll so the "open" pill flips without a reload.
+  setInterval(() => { if (!$('step-identify').classList.contains('hidden') || !$('step-closed').classList.contains('hidden')) loadConfig(); }, 20000);
+
+  // ---- step 1 ----
+  $('identifyForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    $('identifyError').textContent = '';
+    const btn = $('identifyBtn'); busy(btn, true, 'Checking…');
+    try {
+      const email = $('email').value.trim().toLowerCase();
+      const code = $('code').value.trim().toUpperCase();
+      const r = await API.call('verify', { email, code });
+      state.email = email; state.code = code; state.name = r.name || email;
+      if (r.alreadyVoted) {
+        $('alreadyEmail').textContent = email; $('alreadyReceipt').textContent = r.receipt || '—';
+        show('step-already'); return;
+      }
+      await loadConfig();
+      if (!state.open) { show('step-closed'); return; }
+      renderBallot(); show('step-ballot');
+    } catch (e) {
+      $('identifyError').textContent = e.message;
+    } finally { busy(btn, false); }
+  });
+
+  $('recheckBtn').addEventListener('click', async () => {
+    await loadConfig();
+    if (state.open && state.email) { renderBallot(); show('step-ballot'); }
+  });
+
+  // ---- step 2 ----
+  function renderBallot() {
+    const ul = $('candList'); ul.innerHTML = '';
+    state.candidates.forEach(c => {
+      const li = document.createElement('li');
+      li.className = 'cand'; li.dataset.id = c.id; li.dataset.name = c.name.toLowerCase();
+      li.setAttribute('role', 'checkbox'); li.setAttribute('aria-checked', 'false'); li.tabIndex = 0;
+      li.innerHTML = `<span class="box"></span><span class="cand-text"><span class="cand-name"></span>${c.note ? '<span class="cand-note"></span>' : ''}</span>`;
+      li.querySelector('.cand-name').textContent = c.name;
+      if (c.note) li.querySelector('.cand-note').textContent = c.note;
+      li.addEventListener('click', () => toggle(c.id));
+      li.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(c.id); } });
+      ul.appendChild(li);
+    });
+    updateCounter();
+  }
+  function toggle(id) {
+    $('ballotError').textContent = '';
+    if (state.selected.has(id)) state.selected.delete(id);
+    else if (state.selected.size >= state.seats) { $('ballotError').textContent = `You can select at most ${state.seats}. Unselect someone first.`; return; }
+    else state.selected.add(id);
+    updateCounter();
+  }
+  function updateCounter() {
+    const full = state.selected.size >= state.seats;
+    document.querySelectorAll('.cand').forEach(li => {
+      const on = state.selected.has(li.dataset.id);
+      li.classList.toggle('on', on); li.setAttribute('aria-checked', on);
+      li.classList.toggle('dim', full && !on);
+    });
+    $('selCount').textContent = state.selected.size;
+    $('reviewBtn').disabled = state.selected.size === 0;
+    document.querySelector('.sticky-counter').classList.toggle('full', full);
+  }
+  $('clearBtn').addEventListener('click', () => { state.selected.clear(); updateCounter(); });
+  $('filter').addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('.cand').forEach(li => li.classList.toggle('hidden', q && !li.dataset.name.includes(q)));
+  });
+  $('reviewBtn').addEventListener('click', () => {
+    const ol = $('reviewList'); ol.innerHTML = '';
+    const byId = Object.fromEntries(state.candidates.map(c => [c.id, c]));
+    [...state.selected].map(id => byId[id]).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(c => { const li = document.createElement('li'); li.textContent = c.name; ol.appendChild(li); });
+    $('reviewCount').textContent = state.selected.size;
+    $('submitError').textContent = '';
+    show('step-review');
+  });
+
+  // ---- step 3 ----
+  $('backBtn').addEventListener('click', () => show('step-ballot'));
+  $('submitBtn').addEventListener('click', async () => {
+    const btn = $('submitBtn'); busy(btn, true, 'Submitting…'); $('backBtn').disabled = true;
+    try {
+      const r = await API.call('vote', { email: state.email, code: state.code, choices: [...state.selected] });
+      $('receipt').textContent = r.receipt;
+      $('doneTime').textContent = 'Recorded ' + new Date(r.timestamp).toLocaleString();
+      show('step-done');
+    } catch (e) {
+      if (e.data && e.data.alreadyVoted) {
+        $('alreadyEmail').textContent = state.email; $('alreadyReceipt').textContent = e.data.receipt || '—';
+        show('step-already');
+      } else if (/closed/i.test(e.message)) {
+        $('closedMsg').textContent = 'Voting has closed. Your ballot was not submitted in time.';
+        show('step-closed');
+      } else {
+        $('submitError').textContent = e.message + ' — please try again.';
+      }
+    } finally { busy(btn, false); $('backBtn').disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>
