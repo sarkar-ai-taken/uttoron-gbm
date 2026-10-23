@@ -4,12 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Uttoron Election — Vote</title>
+<link rel="icon" href="assets/favicon.png">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <header class="top">
-  <div class="brand"><span class="dot"></span> <span id="orgName">Uttoron</span></div>
+  <img class="logo" src="assets/logo.jpg" alt="Uttoron logo">
+  <div class="brand-text">
+  <div class="brand"><span id="orgName">Uttoron</span></div>
   <div class="title" id="electionName">Executive Committee Election</div>
+  </div>
 </header>
 
 <main class="wrap">
@@ -213,6 +217,7 @@
       const code = $('code').value.trim().toUpperCase();
       const r = await API.call('verify', { email, code });
       state.email = email; state.code = code; state.name = r.name || email;
+      $('voterName').textContent = state.name; $('voterEmail').textContent = '(' + email + ')';
       if (r.alreadyVoted) {
         $('alreadyEmail').textContent = email; $('alreadyReceipt').textContent = r.receipt || '—';
         show('step-already'); return;
